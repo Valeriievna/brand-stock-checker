@@ -454,7 +454,7 @@ def check_data_quality(products):
         except (ValueError, TypeError):
             disc = 0
 
-        if price == 0:
+        if price == 0 and p.get("in_stock") is not False:
             warnings.append(f"Price is 0: {name}")
         if p.get("on_discount") and disc >= price:
             warnings.append(f"Discount price ≥ regular price: {name}")
