@@ -97,10 +97,11 @@ def node_available():
     return _node_cmd() is not None
 
 
-def decode_nuxt(script_text):
+def decode_nuxt(script_text, log_fn=print):
     """Run the __NUXT__ script in Node.js and return the parsed state dict."""
     cmd = _node_cmd()
     if not cmd:
+        log_fn("  DEBUG: no node/nodejs command found")
         return None
     js = "const window={};\n" + script_text + "\nprocess.stdout.write(JSON.stringify(window.__NUXT__||null));"
     try:
@@ -110,8 +111,9 @@ def decode_nuxt(script_text):
         )
         if result.returncode == 0 and result.stdout:
             return json.loads(result.stdout)
-    except Exception:
-        pass
+        log_fn(f"  DEBUG: node exit={result.returncode} stderr={result.stderr[:200]!r} stdout={result.stdout[:100]!r}")
+    except Exception as e:
+        log_fn(f"  DEBUG: node exception: {e}")
     return None
 
 
@@ -140,14 +142,19 @@ def scrape_epicenter(brand, session, has_node, log_fn=print):
             break
 
         nuxt_data = None
+        nuxt_script = None
         for script in soup.find_all("script"):
             txt = script.string or ""
             if "window.__NUXT__" in txt:
-                nuxt_data = decode_nuxt(txt)
+                nuxt_script = txt
+                nuxt_data = decode_nuxt(txt, log_fn=log_fn)
                 break
 
         if not nuxt_data:
-            log_fn(f"  Page {page_num}: could not decode page data")
+            if nuxt_script is None:
+                log_fn(f"  Page {page_num}: __NUXT__ script not found in page (site may be blocking)")
+            else:
+                log_fn(f"  Page {page_num}: could not decode page data")
             break
 
         if total_pages is None:
