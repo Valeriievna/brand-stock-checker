@@ -128,7 +128,31 @@ def decode_nuxt(script_text, log_fn=print):
 #  EPICENTER SCRAPER
 # ─────────────────────────────────────────────────────────
 
-def scrape_epicenter(brand, session, has_node, log_fn=print):
+def check_epicenter_product_stock(url, session):
+    """Fetch a single Epicenter product page and return True/False/None."""
+    soup, raw = fetch(url, session)
+    if not soup:
+        return None
+    nuxt_data = None
+    for script in soup.find_all("script"):
+        txt = script.string or ""
+        if "window.__NUXT__" in txt:
+            nuxt_data = decode_nuxt(txt)
+            break
+    if not nuxt_data:
+        return None
+    try:
+        status = nuxt_data["state"]["pages"]["shop"]["product"]["params"]["availabilityStatus"]
+        code = status.get("code")
+        if code == 400:
+            return False
+        elif code is not None:
+            return True
+    except (KeyError, TypeError):
+        pass
+    return None
+
+def scrape_epicenter(brand, session, has_node, log_fn=print, meta=None):
     all_products = []
 
     if not has_node:
@@ -166,7 +190,11 @@ def scrape_epicenter(brand, session, has_node, log_fn=print):
 
         if total_pages is None:
             try:
-                total_pages = nuxt_data["data"][0]["params"]["pagination"]["pages"]
+                pagination  = nuxt_data["data"][0]["params"]["pagination"]
+                total_pages = pagination.get("pages", 1)
+                site_total  = pagination.get("count") or pagination.get("total")
+                if site_total and meta is not None:
+                    meta["site_total"] = int(site_total)
             except (KeyError, IndexError, TypeError):
                 total_pages = 1
 
@@ -209,13 +237,36 @@ def scrape_epicenter(brand, session, has_node, log_fn=print):
                     "url": url_p, "in_stock": in_stock,
                 })
 
-        log_fn(f"  Page {page_num}: {len(page_products)} products")
+        log_fn(f"  Page {page_num}/{total_pages or '?'}: {len(page_products)} products")
         all_products.extend(page_products)
 
         if page_num >= (total_pages or 1):
             break
 
         time.sleep(DELAY_SECONDS)
+
+    # ── Per-product stock verification ──
+    if all_products:
+        log_fn(f"  Verifying stock for {len(all_products)} products (this takes a few minutes)...")
+        for i, p in enumerate(all_products):
+            url_p = p.get("url", "")
+            if url_p:
+                stock = check_epicenter_product_stock(url_p, session)
+                if stock is not None:
+                    p["in_stock"] = stock
+            if (i + 1) % 20 == 0:
+                log_fn(f"  Verified {i + 1}/{len(all_products)}...")
+            time.sleep(1)
+        log_fn(f"  Stock verification complete.")
+
+    if meta is not None:
+        meta["scraped_total"] = len(all_products)
+        site_total = meta.get("site_total")
+        if site_total:
+            if len(all_products) >= site_total:
+                log_fn(f"  Count check ✅ — found {len(all_products)}, site reports {site_total}")
+            else:
+                log_fn(f"  Count check ⚠️ — found {len(all_products)}, site reports {site_total} (may be incomplete)")
 
     return all_products
 
@@ -259,7 +310,7 @@ def parse_eva_initial_state(html_text):
     return None
 
 
-def scrape_eva(brand, session, log_fn=print):
+def scrape_eva(brand, session, log_fn=print, meta=None):
     all_products = []
 
     log_fn(f"Eva: searching for '{brand}'...")
@@ -291,6 +342,11 @@ def scrape_eva(brand, session, log_fn=print):
 
         if total_pages is None:
             total_pages = brand_state.get("totalPages", 1)
+            site_total  = (brand_state.get("totalCount")
+                           or brand_state.get("total")
+                           or brand_state.get("productsCount"))
+            if site_total and meta is not None:
+                meta["site_total"] = int(site_total)
 
         raw_products = brand_state.get("products", [])
         if not raw_products:
@@ -321,7 +377,7 @@ def scrape_eva(brand, session, log_fn=print):
                     "url": url_p, "in_stock": in_stock,
                 })
 
-        log_fn(f"  Page {page_num}: {len(page_products)} products")
+        log_fn(f"  Page {page_num}/{total_pages or '?'}: {len(page_products)} products")
         all_products.extend(page_products)
 
         if page_num >= (total_pages or 1):
@@ -329,7 +385,43 @@ def scrape_eva(brand, session, log_fn=print):
 
         time.sleep(DELAY_SECONDS)
 
+    if meta is not None:
+        meta["scraped_total"] = len(all_products)
+        site_total = meta.get("site_total")
+        if site_total:
+            if len(all_products) >= site_total:
+                log_fn(f"  Count check ✅ — found {len(all_products)}, site reports {site_total}")
+            else:
+                log_fn(f"  Count check ⚠️ — found {len(all_products)}, site reports {site_total} (may be incomplete)")
+
     return all_products
+
+
+# ─────────────────────────────────────────────────────────
+#  DATA QUALITY CHECK
+# ─────────────────────────────────────────────────────────
+
+def check_data_quality(products):
+    """Return list of warning strings for suspicious product data."""
+    warnings = []
+    for p in products:
+        name = p.get("name", "")[:50]
+        try:
+            price = float(str(p.get("price", 0)).replace(" ", "").replace(",", "."))
+        except (ValueError, TypeError):
+            price = 0
+        try:
+            disc  = float(str(p.get("discount_price", 0) or 0).replace(" ", "").replace(",", "."))
+        except (ValueError, TypeError):
+            disc = 0
+
+        if price == 0:
+            warnings.append(f"Price is 0: {name}")
+        if p.get("on_discount") and disc >= price:
+            warnings.append(f"Discount price ≥ regular price: {name}")
+        if p.get("on_discount") and price > 0 and disc > 0 and (price - disc) / price > 0.9:
+            warnings.append(f"Discount >90% (suspicious): {name}")
+    return warnings
 
 
 # ─────────────────────────────────────────────────────────

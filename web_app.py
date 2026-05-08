@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import requests
+import random
 from io import BytesIO
 from datetime import datetime
 from pathlib import Path
@@ -11,7 +12,7 @@ from openpyxl.styles import Font
 sys.path.insert(0, str(Path(__file__).parent))
 from scrape_brands import (
     scrape_epicenter, scrape_eva, node_available,
-    write_store_sheet, write_summary_sheet,
+    write_store_sheet, write_summary_sheet, check_data_quality,
 )
 
 st.set_page_config(
@@ -122,20 +123,23 @@ if not selected:
 has_node   = node_available()
 session    = requests.Session()
 results    = {}
+metas      = {}
 checked_at = datetime.now().strftime("%d.%m.%Y %H:%M")
 
 for store in selected:
     with st.status(f"Scraping {store}...", expanded=True) as s:
+        meta = {}
         if store == "Epicenter":
             products = scrape_epicenter(
-                brand.strip(), session, has_node, log_fn=st.write
+                brand.strip(), session, has_node, log_fn=st.write, meta=meta
             )
         else:
             products = scrape_eva(
-                brand.strip(), session, log_fn=st.write
+                brand.strip(), session, log_fn=st.write, meta=meta
             )
 
         results[store] = products
+        metas[store]   = meta
         n      = len(products)
         in_n   = sum(1 for p in products if p["in_stock"] is True)
         disc_n = sum(1 for p in products if p.get("on_discount"))
@@ -172,6 +176,57 @@ c1.metric("Total Products", total)
 c2.metric("In Stock",       total_in)
 c3.metric("Out of Stock",   total_out)
 c4.metric("On Discount",    total_disc)
+
+# ── Data Quality ──────────────────────────────────────────
+
+st.divider()
+any_issue = False
+for store, products in results.items():
+    meta       = metas.get(store, {})
+    site_total = meta.get("site_total")
+    scraped    = len(products)
+    warnings   = check_data_quality(products)
+
+    count_ok   = site_total is None or scraped >= site_total
+    data_ok    = len(warnings) == 0
+
+    if site_total or warnings:
+        any_issue = any_issue or not count_ok or not data_ok
+        with st.expander(
+            f"{'✅' if count_ok and data_ok else '⚠️'} Data quality — {store}",
+            expanded=not (count_ok and data_ok),
+        ):
+            if site_total:
+                if count_ok:
+                    st.success(f"Count check: found {scraped} products, site reports {site_total} ✅")
+                else:
+                    st.warning(f"Count check: found {scraped} products, but site reports {site_total} — some may be missing ⚠️")
+            if warnings:
+                st.warning(f"{len(warnings)} suspicious product(s) detected:")
+                for w in warnings:
+                    st.caption(f"• {w}")
+
+            sample = random.sample(products, min(5, len(products)))
+            st.markdown("**Spot-check sample** — verify these 5 products manually:")
+            spot_rows = []
+            for p in sample:
+                spot_rows.append({
+                    "Product Name":  p.get("name", ""),
+                    "Regular Price": to_float(p.get("price", "")),
+                    "Discount Price": to_float(p.get("discount_price")) if p.get("on_discount") else None,
+                    "In Stock":      "Yes" if p.get("in_stock") is True else ("No" if p.get("in_stock") is False else "?"),
+                    "URL":           p.get("url", ""),
+                })
+            st.dataframe(
+                pd.DataFrame(spot_rows),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Regular Price":  st.column_config.NumberColumn("Regular Price (UAH)", format="%.2f"),
+                    "Discount Price": st.column_config.NumberColumn("Discount Price (UAH)", format="%.2f"),
+                    "URL": st.column_config.LinkColumn("Link", display_text="Open ↗"),
+                },
+            )
 
 # ── Preview table ─────────────────────────────────────────
 
@@ -244,11 +299,11 @@ with tabs[-1]:
         out_n  = sum(1 for p in prods if p["in_stock"] is False)
         disc_n = sum(1 for p in prods if p.get("on_discount"))
         rows.append({
-            "Store":         store,
+            "Store":          store,
             "Total Products": len(prods),
-            "In Stock":      in_n,
-            "Out of Stock":  out_n,
-            "On Discount":   disc_n,
+            "In Stock":       in_n,
+            "Out of Stock":   out_n,
+            "On Discount":    disc_n,
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
