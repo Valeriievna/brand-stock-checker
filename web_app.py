@@ -57,7 +57,7 @@ def to_df(products):
             "Regular Price":  to_float(p.get("price", "")),
             "On Discount":    "Yes" if p.get("on_discount") else "No",
             "Discount Price": to_float(p.get("discount_price")) if p.get("on_discount") else None,
-            "In Stock":       "Yes" if p.get("in_stock") is True else ("No" if p.get("in_stock") is False else "?"),
+            "In Stock":       "Yes" if p.get("in_stock") is True else ("No" if p.get("in_stock") is False else ("Expected" if p.get("in_stock") == "expected" else "?")),
             "URL":            p.get("url", ""),
         })
     return pd.DataFrame(rows)
@@ -167,15 +167,17 @@ if total == 0:
 # ── Metrics ───────────────────────────────────────────────
 
 st.divider()
-total_in   = sum(sum(1 for p in v if p["in_stock"] is True)    for v in results.values())
-total_out  = sum(sum(1 for p in v if p["in_stock"] is False)   for v in results.values())
-total_disc = sum(sum(1 for p in v if p.get("on_discount"))     for v in results.values())
+total_in   = sum(sum(1 for p in v if p["in_stock"] is True)          for v in results.values())
+total_out  = sum(sum(1 for p in v if p["in_stock"] is False)         for v in results.values())
+total_exp  = sum(sum(1 for p in v if p["in_stock"] == "expected")    for v in results.values())
+total_disc = sum(sum(1 for p in v if p.get("on_discount"))           for v in results.values())
 
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Total Products", total)
 c2.metric("In Stock",       total_in)
 c3.metric("Out of Stock",   total_out)
-c4.metric("On Discount",    total_disc)
+c4.metric("Expected",     total_exp)
+c5.metric("On Discount",    total_disc)
 
 # ── Data Quality ──────────────────────────────────────────
 
@@ -203,8 +205,11 @@ for store, products in results.items():
                     st.warning(f"Count check: found {scraped} products, but site reports {site_total} — some may be missing ⚠️")
             if warnings:
                 st.warning(f"{len(warnings)} suspicious product(s) detected:")
-                for w in warnings:
-                    st.caption(f"• {w}")
+                for msg, url in warnings:
+                    if url:
+                        st.caption(f"• {msg} — [Open ↗]({url})")
+                    else:
+                        st.caption(f"• {msg}")
 
             sample = random.sample(products, min(5, len(products)))
             st.markdown("**Spot-check sample** — verify these 5 products manually:")
@@ -214,7 +219,7 @@ for store, products in results.items():
                     "Product Name":  p.get("name", ""),
                     "Regular Price": to_float(p.get("price", "")),
                     "Discount Price": to_float(p.get("discount_price")) if p.get("on_discount") else None,
-                    "In Stock":      "Yes" if p.get("in_stock") is True else ("No" if p.get("in_stock") is False else "?"),
+                    "In Stock":      "Yes" if p.get("in_stock") is True else ("No" if p.get("in_stock") is False else ("Expected" if p.get("in_stock") == "expected" else "?")),
                     "URL":           p.get("url", ""),
                 })
             st.dataframe(
@@ -252,7 +257,7 @@ for i, store in enumerate(stores_with_data):
         with col_stock:
             stock_filter = st.selectbox(
                 "In Stock",
-                ["All", "Yes", "No"],
+                ["All", "Yes", "No", "Expected"],
                 key=f"stock_{store}",
             )
         with col_disc:
@@ -297,12 +302,14 @@ with tabs[-1]:
     for store, prods in results.items():
         in_n   = sum(1 for p in prods if p["in_stock"] is True)
         out_n  = sum(1 for p in prods if p["in_stock"] is False)
+        exp_n  = sum(1 for p in prods if p["in_stock"] == "expected")
         disc_n = sum(1 for p in prods if p.get("on_discount"))
         rows.append({
             "Store":          store,
             "Total Products": len(prods),
             "In Stock":       in_n,
             "Out of Stock":   out_n,
+            "Expected":     exp_n,
             "On Discount":    disc_n,
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
