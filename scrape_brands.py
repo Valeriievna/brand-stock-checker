@@ -152,6 +152,24 @@ def check_epicenter_product_stock(url, session):
         pass
     return None
 
+def find_epicenter_brand_url(brand, session, log_fn=print):
+    """Find the brand page URL on Epicenter. Returns URL or None."""
+    import urllib.parse
+    brand_slug = brand.lower().replace(" ", "-")
+    candidates = [
+        f"https://epicentrk.ua/ua/brands/{brand_slug}.html",
+        f"https://epicentrk.ua/ua/brands/{urllib.parse.quote(brand.lower())}.html",
+    ]
+    for url in candidates:
+        try:
+            r = session.get(url, headers=REQUEST_HEADERS, timeout=15, allow_redirects=True)
+            if r.status_code == 200 and "brands" in r.url:
+                return r.url.split("?")[0]
+        except Exception:
+            pass
+    return None
+
+
 def scrape_epicenter(brand, session, has_node, log_fn=print, meta=None):
     all_products = []
 
@@ -159,13 +177,24 @@ def scrape_epicenter(brand, session, has_node, log_fn=print, meta=None):
         log_fn("Epicenter: SKIPPED — Node.js is not installed. Install from https://nodejs.org/")
         return []
 
-    brand_enc = requests.utils.quote(brand)
-    base_url  = f"https://epicentrk.ua/ua/search/?q={brand_enc}&per-page=60"
     log_fn(f"Epicenter: searching for '{brand}'...")
+
+    brand_base = find_epicenter_brand_url(brand, session, log_fn)
+    if brand_base:
+        log_fn(f"  Using brand page: {brand_base}")
+    else:
+        brand_enc = requests.utils.quote(brand)
+        brand_base = f"https://epicentrk.ua/ua/search/?q={brand_enc}&per-page=60"
+        log_fn(f"  Brand page not found, falling back to search")
+
+    use_brand_page = "brands" in brand_base
     total_pages = None
 
     for page_num in range(1, MAX_PAGES + 1):
-        url = f"{base_url}&page={page_num}" if page_num > 1 else base_url
+        if use_brand_page:
+            url = f"{brand_base}?PAGEN_1={page_num}" if page_num > 1 else brand_base
+        else:
+            url = f"{brand_base}&page={page_num}" if page_num > 1 else brand_base
 
         soup, raw = fetch(url, session)
         if not soup:
@@ -221,11 +250,10 @@ def scrape_epicenter(brand, session, has_node, log_fn=print, meta=None):
             discount_price = str(price_now) if on_discount else ""
 
             avail = p.get("avail")
-            avail_str = str(p.get("available") or "")
-            if avail is not None:
-                in_stock = avail > 0
-            elif "наявності" in avail_str:
-                in_stock = "Немає" not in avail_str
+            if avail == 100:
+                in_stock = True
+            elif avail == 400:
+                in_stock = False
             else:
                 in_stock = None
 
@@ -244,20 +272,6 @@ def scrape_epicenter(brand, session, has_node, log_fn=print, meta=None):
             break
 
         time.sleep(DELAY_SECONDS)
-
-    # ── Per-product stock verification ──
-    if all_products:
-        log_fn(f"  Verifying stock for {len(all_products)} products (this takes a few minutes)...")
-        for i, p in enumerate(all_products):
-            url_p = p.get("url", "")
-            if url_p:
-                stock = check_epicenter_product_stock(url_p, session)
-                if stock is not None:
-                    p["in_stock"] = stock
-            if (i + 1) % 20 == 0:
-                log_fn(f"  Verified {i + 1}/{len(all_products)}...")
-            time.sleep(1)
-        log_fn(f"  Stock verification complete.")
 
     if meta is not None:
         meta["scraped_total"] = len(all_products)
