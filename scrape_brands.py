@@ -99,21 +99,28 @@ def node_available():
 
 def decode_nuxt(script_text, log_fn=print):
     """Run the __NUXT__ script in Node.js and return the parsed state dict."""
+    import tempfile, os
     cmd = _node_cmd()
     if not cmd:
-        log_fn("  DEBUG: no node/nodejs command found")
         return None
     js = "const window={};\n" + script_text + "\nprocess.stdout.write(JSON.stringify(window.__NUXT__||null));"
+    tmp = None
     try:
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+            f.write(js)
+            tmp = f.name
         result = subprocess.run(
-            [cmd, "-e", js],
+            [cmd, tmp],
             capture_output=True, text=True, timeout=30
         )
         if result.returncode == 0 and result.stdout:
             return json.loads(result.stdout)
-        log_fn(f"  DEBUG: node exit={result.returncode} stderr={result.stderr[:200]!r} stdout={result.stdout[:100]!r}")
-    except Exception as e:
-        log_fn(f"  DEBUG: node exception: {e}")
+    except Exception:
+        pass
+    finally:
+        if tmp:
+            try: os.unlink(tmp)
+            except OSError: pass
     return None
 
 
