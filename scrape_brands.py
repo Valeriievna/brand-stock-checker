@@ -63,9 +63,10 @@ XLSX_COLS = [
 C_HEADER    = "2E75B6"
 C_IN_STOCK  = "E2EFDA"
 C_OUT_STOCK = "FCE4D6"
-C_UNKNOWN   = "FFF2CC"
+C_EXPECTED  = "FFF2CC"
+C_UNKNOWN   = "EDEDED"
 C_TITLE     = "1F4E79"
-C_DISCOUNT  = "FCE4C4"  # orange tint for discounted rows
+C_DISCOUNT  = "FCE4C4"
 
 
 # ─────────────────────────────────────────────────────────
@@ -191,7 +192,14 @@ def _parse_epicenter_products(raw_products):
         regular_price  = str(price_old if on_discount else price_now)
         discount_price = str(price_now) if on_discount else ""
         avail = p.get("avail")
-        in_stock = True if avail == 100 else (False if avail == 400 else None)
+        if avail == 100:
+            in_stock = True
+        elif avail == 200:
+            in_stock = "expected"
+        elif avail in (350, 400):
+            in_stock = False
+        else:
+            in_stock = None
         if name:
             page_products.append({
                 "name": name, "sku": sku,
@@ -441,10 +449,11 @@ def scrape_eva(brand, session, log_fn=print, meta=None):
 # ─────────────────────────────────────────────────────────
 
 def check_data_quality(products):
-    """Return list of warning strings for suspicious product data."""
+    """Return list of (message, url) tuples for suspicious product data."""
     warnings = []
     for p in products:
         name = p.get("name", "")[:50]
+        url  = p.get("url", "")
         try:
             price = float(str(p.get("price", 0)).replace(" ", "").replace(",", "."))
         except (ValueError, TypeError):
@@ -454,12 +463,12 @@ def check_data_quality(products):
         except (ValueError, TypeError):
             disc = 0
 
-        if price == 0 and p.get("in_stock") is not False:
-            warnings.append(f"Price is 0: {name}")
+        if price == 0 and p.get("in_stock") not in (False, "expected"):
+            warnings.append((f"Price is 0: {name}", url))
         if p.get("on_discount") and disc >= price:
-            warnings.append(f"Discount price ≥ regular price: {name}")
+            warnings.append((f"Discount price ≥ regular price: {name}", url))
         if p.get("on_discount") and price > 0 and disc > 0 and (price - disc) / price > 0.9:
-            warnings.append(f"Discount >90% (suspicious): {name}")
+            warnings.append((f"Discount >90% (suspicious): {name}", url))
     return warnings
 
 
@@ -478,9 +487,10 @@ def _fmt_price(raw):
 def write_store_sheet(ws, products, store_name, brand, checked_at):
     hdr_font = Font(bold=True, color="FFFFFF", size=11)
     hdr_fill = PatternFill("solid", fgColor=C_HEADER)
-    in_fill  = PatternFill("solid", fgColor=C_IN_STOCK)
-    out_fill = PatternFill("solid", fgColor=C_OUT_STOCK)
-    unk_fill = PatternFill("solid", fgColor=C_UNKNOWN)
+    in_fill   = PatternFill("solid", fgColor=C_IN_STOCK)
+    out_fill  = PatternFill("solid", fgColor=C_OUT_STOCK)
+    exp_fill  = PatternFill("solid", fgColor=C_EXPECTED)
+    unk_fill  = PatternFill("solid", fgColor=C_UNKNOWN)
     center   = Alignment(horizontal="center", vertical="center")
     left     = Alignment(horizontal="left",   vertical="center")
     wrap     = Alignment(horizontal="left",   vertical="center", wrap_text=True)
@@ -511,6 +521,8 @@ def write_store_sheet(ws, products, store_name, brand, checked_at):
             status, stock_fill = "Yes", in_fill
         elif p["in_stock"] is False:
             status, stock_fill = "No", out_fill
+        elif p["in_stock"] == "expected":
+            status, stock_fill = "Expected", exp_fill
         else:
             status, stock_fill = "?", unk_fill
 
@@ -534,18 +546,18 @@ def write_store_sheet(ws, products, store_name, brand, checked_at):
             elif ci == 7:
                 c.fill = stock_fill
 
-    fr    = len(products) + 4
-    in_n  = sum(1 for p in products if p["in_stock"] is True)
-    out_n = sum(1 for p in products if p["in_stock"] is False)
-    unk_n = sum(1 for p in products if p["in_stock"] is None)
+    fr     = len(products) + 4
+    in_n   = sum(1 for p in products if p["in_stock"] is True)
+    out_n  = sum(1 for p in products if p["in_stock"] is False)
+    exp_n  = sum(1 for p in products if p["in_stock"] == "expected")
+    unk_n  = sum(1 for p in products if p["in_stock"] is None)
     disc_n = sum(1 for p in products if p.get("on_discount"))
-    bf    = Font(bold=True)
+    bf     = Font(bold=True)
     ws.cell(row=fr, column=1, value="TOTAL").font = bf
     ws.cell(row=fr, column=2, value=f"{len(products)} products").font = bf
-    ws.cell(row=fr, column=5,
-            value=f"On discount: {disc_n}").font = bf
+    ws.cell(row=fr, column=5, value=f"On discount: {disc_n}").font = bf
     ws.cell(row=fr, column=7,
-            value=f"In stock: {in_n}  |  Out of stock: {out_n}  |  Unknown: {unk_n}").font = bf
+            value=f"In stock: {in_n}  |  Out of stock: {out_n}  |  Expected: {exp_n}  |  Unknown: {unk_n}").font = bf
 
 
 def write_summary_sheet(ws, results, brand, checked_at):
@@ -555,7 +567,7 @@ def write_summary_sheet(ws, results, brand, checked_at):
     out_fill = PatternFill("solid", fgColor=C_OUT_STOCK)
     center   = Alignment(horizontal="center", vertical="center")
 
-    ws.merge_cells("A1:E1")
+    ws.merge_cells("A1:G1")
     t = ws["A1"]
     t.value     = f"Summary  ·  Brand: {brand}  ·  {checked_at}"
     t.font      = Font(bold=True, size=13, color=C_TITLE)
@@ -563,8 +575,9 @@ def write_summary_sheet(ws, results, brand, checked_at):
     ws.row_dimensions[1].height = 26
 
     disc_fill = PatternFill("solid", fgColor=C_DISCOUNT)
-    headers = ["Store", "Total Products", "In Stock", "Out of Stock", "On Discount", "Unknown"]
-    widths  = [20, 16, 12, 14, 13, 12]
+    exp_fill  = PatternFill("solid", fgColor=C_EXPECTED)
+    headers = ["Store", "Total Products", "In Stock", "Out of Stock", "Expected", "On Discount", "Unknown"]
+    widths  = [20, 16, 12, 14, 14, 13, 12]
     for ci, (h, w) in enumerate(zip(headers, widths), 1):
         c = ws.cell(row=2, column=ci, value=h)
         c.font = hdr_font
@@ -575,16 +588,19 @@ def write_summary_sheet(ws, results, brand, checked_at):
     for ri, (store, products) in enumerate(results.items(), 3):
         in_n   = sum(1 for p in products if p["in_stock"] is True)
         out_n  = sum(1 for p in products if p["in_stock"] is False)
+        exp_n  = sum(1 for p in products if p["in_stock"] == "expected")
         unk_n  = sum(1 for p in products if p["in_stock"] is None)
         disc_n = sum(1 for p in products if p.get("on_discount"))
-        for ci, val in enumerate([store, len(products), in_n, out_n, disc_n, unk_n], 1):
+        for ci, val in enumerate([store, len(products), in_n, out_n, exp_n, disc_n, unk_n], 1):
             c = ws.cell(row=ri, column=ci, value=val)
             c.alignment = center
             if ci == 3 and in_n > 0:
                 c.fill = in_fill
             if ci == 4 and out_n > 0:
                 c.fill = out_fill
-            if ci == 5 and disc_n > 0:
+            if ci == 5 and exp_n > 0:
+                c.fill = exp_fill
+            if ci == 6 and disc_n > 0:
                 c.fill = disc_fill
 
 
