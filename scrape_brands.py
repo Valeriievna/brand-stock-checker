@@ -82,20 +82,30 @@ def fetch(url, session):
         return None, None
 
 
+def _node_cmd():
+    """Return 'node' or 'nodejs' — whichever is available."""
+    for cmd in ("node", "nodejs"):
+        try:
+            if subprocess.run([cmd, "--version"], capture_output=True, timeout=5).returncode == 0:
+                return cmd
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            pass
+    return None
+
+
 def node_available():
-    try:
-        result = subprocess.run(["node", "--version"], capture_output=True, timeout=5)
-        return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return False
+    return _node_cmd() is not None
 
 
 def decode_nuxt(script_text):
     """Run the __NUXT__ script in Node.js and return the parsed state dict."""
+    cmd = _node_cmd()
+    if not cmd:
+        return None
     js = "const window={};\n" + script_text + "\nprocess.stdout.write(JSON.stringify(window.__NUXT__||null));"
     try:
         result = subprocess.run(
-            ["node", "-e", js],
+            [cmd, "-e", js],
             capture_output=True, text=True, timeout=30
         )
         if result.returncode == 0 and result.stdout:
