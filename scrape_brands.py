@@ -11,6 +11,7 @@ import time
 import json
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -157,22 +158,69 @@ def find_epicenter_brand_url(brand, session, log_fn=print):
     import urllib.parse
     brand_slug = brand.lower().replace(" ", "-")
     candidates = [
+        f"https://epicentrk.ua/brands/{brand_slug}.html",
         f"https://epicentrk.ua/ua/brands/{brand_slug}.html",
+        f"https://epicentrk.ua/brands/{urllib.parse.quote(brand.lower())}.html",
         f"https://epicentrk.ua/ua/brands/{urllib.parse.quote(brand.lower())}.html",
     ]
     for url in candidates:
         try:
             r = session.get(url, headers=REQUEST_HEADERS, timeout=15, allow_redirects=True)
-            if r.status_code == 200 and "brands" in r.url:
+            if r.status_code == 200 and "window.__NUXT__" in r.text:
                 return r.url.split("?")[0]
         except Exception:
             pass
     return None
 
 
-def scrape_epicenter(brand, session, has_node, log_fn=print, meta=None):
-    all_products = []
+def _epicenter_page_url(brand_base, page_num, use_brand_page):
+    if page_num == 1:
+        return brand_base
+    return f"{brand_base}?PAGEN_1={page_num}" if use_brand_page else f"{brand_base}&page={page_num}"
 
+
+def _parse_epicenter_products(raw_products):
+    page_products = []
+    for p in raw_products:
+        name      = p.get("name_ua") or p.get("name_ru") or ""
+        sku       = str(p.get("id") or "")
+        url_p     = p.get("url") or ""
+        price_now = p.get("price") or 0
+        price_old = p.get("price_old") or 0
+        on_discount    = bool(price_old and price_old > price_now)
+        regular_price  = str(price_old if on_discount else price_now)
+        discount_price = str(price_now) if on_discount else ""
+        avail = p.get("avail")
+        in_stock = True if avail == 100 else (False if avail == 400 else None)
+        if name:
+            page_products.append({
+                "name": name, "sku": sku,
+                "price": regular_price, "on_discount": on_discount,
+                "discount_price": discount_price,
+                "url": url_p, "in_stock": in_stock,
+            })
+    return page_products
+
+
+def _fetch_epicenter_page(page_num, brand_base, use_brand_page, session):
+    url = _epicenter_page_url(brand_base, page_num, use_brand_page)
+    soup, raw = fetch(url, session)
+    if not soup:
+        return page_num, None
+    for script in soup.find_all("script"):
+        txt = script.string or ""
+        if "window.__NUXT__" in txt:
+            nuxt_data = decode_nuxt(txt)
+            if nuxt_data:
+                try:
+                    raw_prods = nuxt_data["state"]["products"]["products"]
+                    return page_num, _parse_epicenter_products(raw_prods)
+                except (KeyError, TypeError):
+                    pass
+    return page_num, None
+
+
+def scrape_epicenter(brand, session, has_node, log_fn=print, meta=None):
     if not has_node:
         log_fn("Epicenter: SKIPPED — Node.js is not installed. Install from https://nodejs.org/")
         return []
@@ -181,97 +229,64 @@ def scrape_epicenter(brand, session, has_node, log_fn=print, meta=None):
 
     brand_base = find_epicenter_brand_url(brand, session, log_fn)
     if brand_base:
-        log_fn(f"  Using brand page: {brand_base}")
+        log_fn(f"  Brand page found: {brand_base}")
     else:
         brand_enc = requests.utils.quote(brand)
         brand_base = f"https://epicentrk.ua/ua/search/?q={brand_enc}&per-page=60"
-        log_fn(f"  Brand page not found, falling back to search")
+        log_fn(f"  ⚠️ Brand page not found — using search (stock status may be incomplete)")
 
     use_brand_page = "brands" in brand_base
-    total_pages = None
 
-    for page_num in range(1, MAX_PAGES + 1):
-        if use_brand_page:
-            url = f"{brand_base}?PAGEN_1={page_num}" if page_num > 1 else brand_base
-        else:
-            url = f"{brand_base}&page={page_num}" if page_num > 1 else brand_base
+    # ── Fetch page 1 to get total_pages ──
+    soup, raw = fetch(_epicenter_page_url(brand_base, 1, use_brand_page), session)
+    if not soup:
+        log_fn("  Page 1: failed to load")
+        return []
 
-        soup, raw = fetch(url, session)
-        if not soup:
-            log_fn(f"  Page {page_num}: failed to load")
+    nuxt_data = None
+    for script in soup.find_all("script"):
+        txt = script.string or ""
+        if "window.__NUXT__" in txt:
+            nuxt_data = decode_nuxt(txt, log_fn=log_fn)
             break
 
-        nuxt_data = None
-        nuxt_script = None
-        for script in soup.find_all("script"):
-            txt = script.string or ""
-            if "window.__NUXT__" in txt:
-                nuxt_script = txt
-                nuxt_data = decode_nuxt(txt, log_fn=log_fn)
-                break
+    if not nuxt_data:
+        log_fn("  Page 1: could not decode page data")
+        return []
 
-        if not nuxt_data:
-            if nuxt_script is None:
-                log_fn(f"  Page {page_num}: __NUXT__ script not found in page (site may be blocking)")
-            else:
-                log_fn(f"  Page {page_num}: could not decode page data")
-            break
+    try:
+        pagination  = nuxt_data["data"][0]["params"]["pagination"]
+        total_pages = pagination.get("pages", 1)
+        site_total  = pagination.get("count") or pagination.get("total")
+        if site_total and meta is not None:
+            meta["site_total"] = int(site_total)
+    except (KeyError, IndexError, TypeError):
+        total_pages = 1
 
-        if total_pages is None:
-            try:
-                pagination  = nuxt_data["data"][0]["params"]["pagination"]
-                total_pages = pagination.get("pages", 1)
-                site_total  = pagination.get("count") or pagination.get("total")
-                if site_total and meta is not None:
-                    meta["site_total"] = int(site_total)
-            except (KeyError, IndexError, TypeError):
-                total_pages = 1
+    try:
+        page1_products = _parse_epicenter_products(nuxt_data["state"]["products"]["products"])
+    except (KeyError, TypeError):
+        page1_products = []
 
-        try:
-            raw_products = nuxt_data["state"]["products"]["products"]
-        except (KeyError, TypeError):
-            log_fn(f"  Page {page_num}: no products in state")
-            break
+    log_fn(f"  Page 1/{total_pages}: {len(page1_products)} products")
+    all_products = list(page1_products)
 
-        if not raw_products:
-            log_fn(f"  Page {page_num}: no products found")
-            break
+    # ── Fetch remaining pages in parallel (3 at a time) ──
+    if total_pages > 1:
+        remaining = list(range(2, min(total_pages, MAX_PAGES) + 1))
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {
+                executor.submit(_fetch_epicenter_page, p, brand_base, use_brand_page, session): p
+                for p in remaining
+            }
+            page_results = {}
+            for future in as_completed(futures):
+                page_num, products = future.result()
+                page_results[page_num] = products or []
+                log_fn(f"  Page {page_num}/{total_pages}: {len(page_results[page_num])} products")
 
-        page_products = []
-        for p in raw_products:
-            name      = p.get("name_ua") or p.get("name_ru") or ""
-            sku       = str(p.get("id") or "")
-            url_p     = p.get("url") or ""
-
-            price_now = p.get("price") or 0
-            price_old = p.get("price_old") or 0
-            on_discount    = bool(price_old and price_old > price_now)
-            regular_price  = str(price_old if on_discount else price_now)
-            discount_price = str(price_now) if on_discount else ""
-
-            avail = p.get("avail")
-            if avail == 100:
-                in_stock = True
-            elif avail == 400:
-                in_stock = False
-            else:
-                in_stock = None
-
-            if name:
-                page_products.append({
-                    "name": name, "sku": sku,
-                    "price": regular_price, "on_discount": on_discount,
-                    "discount_price": discount_price,
-                    "url": url_p, "in_stock": in_stock,
-                })
-
-        log_fn(f"  Page {page_num}/{total_pages or '?'}: {len(page_products)} products")
-        all_products.extend(page_products)
-
-        if page_num >= (total_pages or 1):
-            break
-
-        time.sleep(DELAY_SECONDS)
+        for p in remaining:
+            all_products.extend(page_results.get(p, []))
 
     if meta is not None:
         meta["scraped_total"] = len(all_products)
@@ -324,9 +339,42 @@ def parse_eva_initial_state(html_text):
     return None
 
 
-def scrape_eva(brand, session, log_fn=print, meta=None):
-    all_products = []
+def _parse_eva_products(brand_state):
+    page_products = []
+    for p in brand_state.get("products", []):
+        name     = p.get("name") or ""
+        sku      = str(p.get("sku") or "")
+        url_key  = p.get("url_key") or ""
+        url_p    = f"https://eva.ua/ua/{url_key}/" if url_key else ""
+        stock    = p.get("stock") or {}
+        in_stock = stock.get("is_in_stock")
+        original = p.get("original_price") or 0
+        final    = p.get("final_price") or p.get("price") or 0
+        on_discount    = bool(original and original > final)
+        regular_price  = str(original if on_discount else final)
+        discount_price = str(final) if on_discount else ""
+        if name:
+            page_products.append({
+                "name": name, "sku": sku,
+                "price": regular_price, "on_discount": on_discount,
+                "discount_price": discount_price,
+                "url": url_p, "in_stock": in_stock,
+            })
+    return page_products
 
+
+def _fetch_eva_page(page_num, base_url, session):
+    url = f"{base_url}?p={page_num}" if page_num > 1 else base_url
+    soup, raw = fetch(url, session)
+    if not raw:
+        return page_num, None
+    state = parse_eva_initial_state(raw)
+    if not state:
+        return page_num, None
+    return page_num, _parse_eva_products(state.get("brand", {}))
+
+
+def scrape_eva(brand, session, log_fn=print, meta=None):
     log_fn(f"Eva: searching for '{brand}'...")
     log_fn("  Looking up brand in Eva catalogue...")
     brand_id, found_title = find_eva_brand_id(brand, session)
@@ -334,70 +382,47 @@ def scrape_eva(brand, session, log_fn=print, meta=None):
         log_fn(f"  Brand '{brand}' was not found in Eva's brand list.")
         return []
     log_fn(f"  Found: '{found_title}' (ID {brand_id})")
-    time.sleep(DELAY_SECONDS)
 
-    base_url    = f"https://eva.ua/ua/brnd-{brand_id}/"
-    total_pages = None
+    base_url = f"https://eva.ua/ua/brnd-{brand_id}/"
 
-    for page_num in range(1, MAX_PAGES + 1):
-        url = f"{base_url}?p={page_num}" if page_num > 1 else base_url
+    # ── Fetch page 1 to get total_pages ──
+    soup, raw = fetch(base_url, session)
+    if not raw:
+        log_fn("  Page 1: failed to load")
+        return []
+    state = parse_eva_initial_state(raw)
+    if not state:
+        log_fn("  Page 1: could not parse page state")
+        return []
 
-        soup, raw = fetch(url, session)
-        if not soup:
-            log_fn(f"  Page {page_num}: failed to load")
-            break
+    brand_state = state.get("brand", {})
+    total_pages = brand_state.get("totalPages", 1)
+    site_total  = (brand_state.get("totalCount")
+                   or brand_state.get("total")
+                   or brand_state.get("productsCount"))
+    if site_total and meta is not None:
+        meta["site_total"] = int(site_total)
 
-        state = parse_eva_initial_state(raw)
-        if not state:
-            log_fn(f"  Page {page_num}: could not parse page state")
-            break
+    page1_products = _parse_eva_products(brand_state)
+    log_fn(f"  Page 1/{total_pages}: {len(page1_products)} products")
+    all_products = list(page1_products)
 
-        brand_state = state.get("brand", {})
+    # ── Fetch remaining pages in parallel (3 at a time) ──
+    if total_pages > 1:
+        remaining = list(range(2, min(total_pages, MAX_PAGES) + 1))
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {
+                executor.submit(_fetch_eva_page, p, base_url, session): p
+                for p in remaining
+            }
+            page_results = {}
+            for future in as_completed(futures):
+                page_num, products = future.result()
+                page_results[page_num] = products or []
+                log_fn(f"  Page {page_num}/{total_pages}: {len(page_results[page_num])} products")
 
-        if total_pages is None:
-            total_pages = brand_state.get("totalPages", 1)
-            site_total  = (brand_state.get("totalCount")
-                           or brand_state.get("total")
-                           or brand_state.get("productsCount"))
-            if site_total and meta is not None:
-                meta["site_total"] = int(site_total)
-
-        raw_products = brand_state.get("products", [])
-        if not raw_products:
-            log_fn(f"  Page {page_num}: no products")
-            break
-
-        page_products = []
-        for p in raw_products:
-            name    = p.get("name") or ""
-            sku     = str(p.get("sku") or "")
-            url_key = p.get("url_key") or ""
-            url_p   = f"https://eva.ua/ua/{url_key}/" if url_key else ""
-            stock   = p.get("stock") or {}
-            in_stock = stock.get("is_in_stock")
-
-            # Eva: price = discounted price, original_price = full price before discount
-            original = p.get("original_price") or 0
-            final    = p.get("final_price") or p.get("price") or 0
-            on_discount    = bool(original and original > final)
-            regular_price  = str(original if on_discount else final)
-            discount_price = str(final) if on_discount else ""
-
-            if name:
-                page_products.append({
-                    "name": name, "sku": sku,
-                    "price": regular_price, "on_discount": on_discount,
-                    "discount_price": discount_price,
-                    "url": url_p, "in_stock": in_stock,
-                })
-
-        log_fn(f"  Page {page_num}/{total_pages or '?'}: {len(page_products)} products")
-        all_products.extend(page_products)
-
-        if page_num >= (total_pages or 1):
-            break
-
-        time.sleep(DELAY_SECONDS)
+        for p in remaining:
+            all_products.extend(page_results.get(p, []))
 
     if meta is not None:
         meta["scraped_total"] = len(all_products)
