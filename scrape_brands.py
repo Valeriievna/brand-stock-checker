@@ -58,6 +58,7 @@ XLSX_COLS = [
     ("On Discount",    12),
     ("Discount Price", 14),
     ("In Stock",       11),
+    ("Seller",         22),
     ("Product URL",    65),
 ]
 
@@ -201,12 +202,13 @@ def _parse_epicenter_products(raw_products):
             in_stock = False
         else:
             in_stock = None
+        seller = p.get("seller") or ""
         if name:
             page_products.append({
                 "name": name, "sku": sku,
                 "price": regular_price, "on_discount": on_discount,
                 "discount_price": discount_price,
-                "url": url_p, "in_stock": in_stock,
+                "url": url_p, "in_stock": in_stock, "seller": seller,
             })
     return page_products
 
@@ -376,15 +378,17 @@ def _parse_eva_products(brand_data):
         on_discount    = bool(final and price and final < price)
         regular_price  = str(price)
         discount_price = str(final) if on_discount else ""
-        stock    = p.get("stock") or {}
-        in_stock = stock.get("is_in_stock")
-        url_p    = f"https://eva.ua/ua/search/?q={sku}" if sku else ""
+        stock       = p.get("stock") or {}
+        in_stock    = stock.get("is_in_stock")
+        url_p       = f"https://eva.ua/ua/search/?q={sku}" if sku else ""
+        merchant_id = p.get("merchant_id")
+        seller      = "EVA" if merchant_id == 1 else (f"#{merchant_id}" if merchant_id else "")
         if name:
             page_products.append({
                 "name": name, "sku": sku,
                 "price": regular_price, "on_discount": on_discount,
                 "discount_price": discount_price,
-                "url": url_p, "in_stock": in_stock,
+                "url": url_p, "in_stock": in_stock, "seller": seller,
             })
     return page_products
 
@@ -532,7 +536,7 @@ def write_store_sheet(ws, products, store_name, brand, checked_at):
     ws.freeze_panes = "A3"
 
     disc_fill = PatternFill("solid", fgColor=C_DISCOUNT)
-    aligns = [center, wrap, center, center, center, center, center, left]
+    aligns = [center, wrap, center, center, center, center, center, center, left]
     for i, p in enumerate(products, 1):
         row = i + 2
         if p["in_stock"] is True:
@@ -553,12 +557,12 @@ def write_store_sheet(ws, products, store_name, brand, checked_at):
             "Yes" if on_disc else "No",
             _fmt_price(p.get("discount_price", "")) if on_disc else "",
             status,
+            p.get("seller", ""),
             p.get("url", ""),
         ]
         for ci, (val, aln) in enumerate(zip(vals, aligns), 1):
             c = ws.cell(row=row, column=ci, value=val)
             c.alignment = aln
-            # Colour: discount columns get orange tint; stock column gets green/red/yellow
             if ci in (5, 6) and on_disc:
                 c.fill = disc_fill
             elif ci == 7:

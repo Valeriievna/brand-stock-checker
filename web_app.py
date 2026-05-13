@@ -58,6 +58,7 @@ def to_df(products):
             "On Discount":    "Yes" if p.get("on_discount") else "No",
             "Discount Price": to_float(p.get("discount_price")) if p.get("on_discount") else None,
             "In Stock":       "Yes" if p.get("in_stock") is True else ("No" if p.get("in_stock") is False else ("Expected" if p.get("in_stock") == "expected" else "?")),
+            "Seller":         p.get("seller", ""),
             "URL":            p.get("url", ""),
         })
     return pd.DataFrame(rows)
@@ -220,6 +221,7 @@ for store, products in results.items():
                     "Regular Price": to_float(p.get("price", "")),
                     "Discount Price": to_float(p.get("discount_price")) if p.get("on_discount") else None,
                     "In Stock":      "Yes" if p.get("in_stock") is True else ("No" if p.get("in_stock") is False else ("Expected" if p.get("in_stock") == "expected" else "?")),
+                    "Seller":        p.get("seller", ""),
                     "URL":           p.get("url", ""),
                 })
             st.dataframe(
