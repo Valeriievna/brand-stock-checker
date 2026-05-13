@@ -76,13 +76,29 @@ with st.sidebar:
     use_eva       = st.checkbox("Eva (eva.ua)",             value=True)
 
     st.divider()
-    st.subheader("2. Enter brand name")
-    brand = st.text_input(
-        label="brand_input",
-        value="Paclan",
-        placeholder="e.g. Paclan",
+    st.subheader("2. Select or enter brand")
+
+    PRESET_BRANDS = [
+        "Paclan", "Vileda", "Domi", "Фрекен Бок", "FINO",
+        "Stella", "Spontex", "PRO SERVIS",
+        "Добра Господарка", "York", "Помічниця",
+        "— Custom —",
+    ]
+
+    selected_brand = st.selectbox(
+        label="brand_select",
+        options=PRESET_BRANDS,
         label_visibility="collapsed",
     )
+
+    if selected_brand == "— Custom —":
+        brand = st.text_input(
+            label="brand_custom",
+            placeholder="Type brand name...",
+            label_visibility="collapsed",
+        )
+    else:
+        brand = selected_brand
 
     st.divider()
     go = st.button("🔎  Search", type="primary", use_container_width=True)
