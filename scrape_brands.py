@@ -5,6 +5,7 @@ Discovers all products of a brand on Epicenter and Eva.ua,
 exports results to a multi-sheet Excel workbook.
 """
 
+import math
 import requests
 import subprocess
 import time
@@ -332,35 +333,52 @@ def find_eva_brand_id(brand_name, session):
     return None, None
 
 
-def parse_eva_initial_state(html_text):
-    """Extract and parse window.__INITIAL_STATE__ from Eva page HTML."""
-    for script in BeautifulSoup(html_text, "html.parser").find_all("script"):
-        txt = script.string or ""
-        if "__INITIAL_STATE__" in txt:
-            try:
-                idx = txt.index("{")
-                decoder = json.JSONDecoder()
-                data, _ = decoder.raw_decode(txt, idx)
-                return data
-            except (ValueError, json.JSONDecodeError):
-                pass
+def _resolve_nuxt(arr, idx, depth=0):
+    """Dereference Nuxt 3 array-ref payload format."""
+    if depth > 30 or not isinstance(idx, int) or idx < 0 or idx >= len(arr):
+        return None
+    val = arr[idx]
+    if isinstance(val, list) and len(val) == 2 and isinstance(val[0], str) and isinstance(val[1], int):
+        return _resolve_nuxt(arr, val[1], depth + 1)
+    if isinstance(val, dict):
+        return {k: (_resolve_nuxt(arr, v, depth + 1) if isinstance(v, int) else v) for k, v in val.items()}
+    if isinstance(val, list):
+        return [_resolve_nuxt(arr, v, depth + 1) if isinstance(v, int) else v for v in val]
+    return val
+
+
+def parse_eva_nuxt_payload(html_text, brand_id):
+    """Extract brand data from Nuxt 3 <script type='application/json'> payload."""
+    soup = BeautifulSoup(html_text, "html.parser")
+    tag = soup.find("script", {"type": "application/json"})
+    if not tag:
+        return None
+    try:
+        arr = json.loads(tag.string or "")
+    except (json.JSONDecodeError, TypeError):
+        return None
+    brand_key = f"brnd-brnd-{brand_id}"
+    for el in arr:
+        if isinstance(el, dict) and brand_key in el:
+            idx = el[brand_key]
+            if isinstance(idx, int) and idx > 0:
+                return _resolve_nuxt(arr, idx)
     return None
 
 
-def _parse_eva_products(brand_state):
+def _parse_eva_products(brand_data):
     page_products = []
-    for p in brand_state.get("products", []):
-        name     = p.get("name") or ""
-        sku      = str(p.get("sku") or "")
-        url_key  = p.get("url_key") or ""
-        url_p    = f"https://eva.ua/ua/{url_key}/" if url_key else ""
+    for p in brand_data.get("hits", []):
+        name   = p.get("name") or ""
+        sku    = str(p.get("sku") or "")
+        price  = p.get("price") or 0
+        final  = p.get("final_price") or p.get("special_price") or price
+        on_discount    = bool(final and price and final < price)
+        regular_price  = str(price)
+        discount_price = str(final) if on_discount else ""
         stock    = p.get("stock") or {}
         in_stock = stock.get("is_in_stock")
-        original = p.get("original_price") or 0
-        final    = p.get("final_price") or p.get("price") or 0
-        on_discount    = bool(original and original > final)
-        regular_price  = str(original if on_discount else final)
-        discount_price = str(final) if on_discount else ""
+        url_p    = f"https://eva.ua/ua/search/?q={sku}" if sku else ""
         if name:
             page_products.append({
                 "name": name, "sku": sku,
@@ -371,15 +389,15 @@ def _parse_eva_products(brand_state):
     return page_products
 
 
-def _fetch_eva_page(page_num, base_url, session):
+def _fetch_eva_page(page_num, base_url, brand_id, session):
     url = f"{base_url}?p={page_num}" if page_num > 1 else base_url
-    soup, raw = fetch(url, session)
+    _, raw = fetch(url, session)
     if not raw:
         return page_num, None
-    state = parse_eva_initial_state(raw)
-    if not state:
+    brand_data = parse_eva_nuxt_payload(raw, brand_id)
+    if not brand_data:
         return page_num, None
-    return page_num, _parse_eva_products(state.get("brand", {}))
+    return page_num, _parse_eva_products(brand_data)
 
 
 def scrape_eva(brand, session, log_fn=print, meta=None):
@@ -394,24 +412,24 @@ def scrape_eva(brand, session, log_fn=print, meta=None):
     base_url = f"https://eva.ua/ua/brnd-{brand_id}/"
 
     # ── Fetch page 1 to get total_pages ──
-    soup, raw = fetch(base_url, session)
+    _, raw = fetch(base_url, session)
     if not raw:
         log_fn("  Page 1: failed to load")
         return []
-    state = parse_eva_initial_state(raw)
-    if not state:
-        log_fn("  Page 1: could not parse page state")
+
+    brand_data = parse_eva_nuxt_payload(raw, brand_id)
+    if not brand_data:
+        log_fn("  Page 1: could not parse page data")
         return []
 
-    brand_state = state.get("brand", {})
-    total_pages = brand_state.get("totalPages", 1)
-    site_total  = (brand_state.get("totalCount")
-                   or brand_state.get("total")
-                   or brand_state.get("productsCount"))
+    site_total = brand_data.get("total")
     if site_total and meta is not None:
         meta["site_total"] = int(site_total)
 
-    page1_products = _parse_eva_products(brand_state)
+    page1_products = _parse_eva_products(brand_data)
+    per_page    = len(page1_products) if page1_products else 40
+    total_pages = math.ceil(int(site_total) / per_page) if site_total and per_page else 1
+
     log_fn(f"  Page 1/{total_pages}: {len(page1_products)} products")
     all_products = list(page1_products)
 
@@ -420,7 +438,7 @@ def scrape_eva(brand, session, log_fn=print, meta=None):
         remaining = list(range(2, min(total_pages, MAX_PAGES) + 1))
         with ThreadPoolExecutor(max_workers=3) as executor:
             futures = {
-                executor.submit(_fetch_eva_page, p, base_url, session): p
+                executor.submit(_fetch_eva_page, p, base_url, brand_id, session): p
                 for p in remaining
             }
             page_results = {}
