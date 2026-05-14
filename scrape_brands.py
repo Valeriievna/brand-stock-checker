@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Brand Stock Scraper
-Discovers all products of a brand on Epicenter and Eva.ua,
+Discovers all products of a brand on Epicenter, Eva.ua, and Organic Market.
 exports results to a multi-sheet Excel workbook.
 """
 
