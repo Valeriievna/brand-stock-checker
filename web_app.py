@@ -11,7 +11,7 @@ from openpyxl.styles import Font
 
 sys.path.insert(0, str(Path(__file__).parent))
 from scrape_brands import (
-    scrape_epicenter, scrape_eva, node_available,
+    scrape_epicenter, scrape_eva, scrape_organic, node_available,
     write_store_sheet, write_summary_sheet, check_data_quality,
 )
 
@@ -72,8 +72,9 @@ with st.sidebar:
     st.divider()
 
     st.subheader("1. Select stores")
-    use_epicenter = st.checkbox("Epicenter (epicentrk.ua)", value=True)
-    use_eva       = st.checkbox("Eva (eva.ua)",             value=True)
+    use_epicenter = st.checkbox("Epicenter (epicentrk.ua)",          value=True)
+    use_eva       = st.checkbox("Eva (eva.ua)",                      value=True)
+    use_organic   = st.checkbox("Organic Market (organic-market.com.ua)", value=True)
 
     st.divider()
     st.subheader("2. Select or enter brand")
@@ -131,6 +132,7 @@ if not brand.strip():
 selected = []
 if use_epicenter: selected.append("Epicenter")
 if use_eva:       selected.append("Eva")
+if use_organic:   selected.append("Organic Market")
 if not selected:
     st.error("Please select at least one store.")
     st.stop()
@@ -150,8 +152,12 @@ for store in selected:
             products = scrape_epicenter(
                 brand.strip(), session, has_node, log_fn=st.write, meta=meta
             )
-        else:
+        elif store == "Eva":
             products = scrape_eva(
+                brand.strip(), session, log_fn=st.write, meta=meta
+            )
+        else:
+            products = scrape_organic(
                 brand.strip(), session, log_fn=st.write, meta=meta
             )
 

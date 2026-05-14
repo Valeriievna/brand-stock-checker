@@ -467,6 +467,160 @@ def scrape_eva(brand, session, log_fn=print, meta=None):
 
 
 # ─────────────────────────────────────────────────────────
+#  ORGANIC MARKET SCRAPER  (organic-market.com.ua)
+# ─────────────────────────────────────────────────────────
+
+def _organic_solve_challenge(session, url):
+    """Fetch URL, bypass JS bot challenge if present, return response."""
+    r = session.get(url, headers=REQUEST_HEADERS, timeout=20, allow_redirects=True)
+    if len(r.text) < 2000 and "challenge_passed" in r.text:
+        m = re.search(r'defaultHash\s*=\s*"([a-f0-9]+)"', r.text)
+        if m:
+            session.cookies.set("challenge_passed", m.group(1),
+                                domain="organic-market.com.ua")
+            r = session.get(url, headers=REQUEST_HEADERS, timeout=20, allow_redirects=True)
+    return r
+
+
+def find_organic_brand_url(brand, session, log_fn=print):
+    """Return the brand page URL on organic-market.com.ua, or None."""
+    slug = brand.lower().replace(" ", "-")
+    candidates = [
+        f"https://organic-market.com.ua/ru/{slug}/",
+        f"https://organic-market.com.ua/ua/{slug}/",
+    ]
+    for url in candidates:
+        try:
+            r = _organic_solve_challenge(session, url)
+            if r.status_code == 200 and "catalogCard-box" in r.text:
+                return r.url
+        except Exception:
+            pass
+    return None
+
+
+def _parse_organic_page(html):
+    soup = BeautifulSoup(html, "html.parser")
+    products = []
+    for card in soup.find_all("div", class_="catalogCard-box"):
+        title_a = card.find(class_="catalogCard-title")
+        if not title_a:
+            continue
+        link = title_a.find("a")
+        if not link:
+            continue
+        name    = link.get_text(strip=True)
+        url_p   = "https://organic-market.com.ua" + link["href"] if link.get("href", "").startswith("/") else link.get("href", "")
+        sku     = str(card.get("data-id", ""))
+
+        old_el  = card.find(class_="catalogCard-oldPrice")
+        new_el  = card.find(class_="catalogCard-price")
+        old_txt = old_el.get_text(strip=True) if old_el else ""
+        new_txt = new_el.get_text(strip=True) if new_el else ""
+
+        def parse_price(txt):
+            digits = re.sub(r"[^\d.]", "", txt.replace(",", ".").replace(" ", ""))
+            try: return float(digits)
+            except ValueError: return 0.0
+
+        old_price = parse_price(old_txt)
+        new_price = parse_price(new_txt)
+
+        if old_price and old_price > new_price:
+            on_discount    = True
+            regular_price  = str(old_price)
+            discount_price = str(new_price)
+        else:
+            on_discount    = False
+            regular_price  = str(new_price or old_price)
+            discount_price = ""
+
+        in_stock = bool(card.find(class_=re.compile(r"j-buy-button-add")))
+
+        products.append({
+            "name": name, "sku": sku,
+            "price": regular_price, "on_discount": on_discount,
+            "discount_price": discount_price,
+            "url": url_p, "in_stock": in_stock, "seller": "Organic Market",
+        })
+    return products
+
+
+def _organic_total_pages(html):
+    soup = BeautifulSoup(html, "html.parser")
+    pager = soup.find("nav", class_="pager")
+    if not pager:
+        return 1
+    page_nums = []
+    for a in pager.find_all(class_="pager__item"):
+        txt = a.get_text(strip=True)
+        try:
+            page_nums.append(int(txt))
+        except ValueError:
+            pass
+    return max(page_nums) if page_nums else 1
+
+
+def _fetch_organic_page(page_num, brand_base, session):
+    if page_num == 1:
+        url = brand_base
+    else:
+        base = brand_base.rstrip("/")
+        url  = f"{base}/filter/page={page_num}/"
+    try:
+        r = _organic_solve_challenge(session, url)
+        if r.status_code == 200:
+            return page_num, _parse_organic_page(r.text)
+    except Exception:
+        pass
+    return page_num, None
+
+
+def scrape_organic(brand, session, log_fn=print, meta=None):
+    log_fn(f"Organic Market: searching for '{brand}'...")
+
+    brand_base = find_organic_brand_url(brand, session, log_fn)
+    if not brand_base:
+        log_fn(f"  Brand '{brand}' not found on Organic Market.")
+        return []
+    log_fn(f"  Brand page found: {brand_base}")
+
+    try:
+        r = _organic_solve_challenge(session, brand_base)
+        if r.status_code != 200:
+            log_fn("  Page 1: failed to load")
+            return []
+    except Exception as e:
+        log_fn(f"  Page 1: error — {e}")
+        return []
+
+    total_pages    = _organic_total_pages(r.text)
+    page1_products = _parse_organic_page(r.text)
+    log_fn(f"  Page 1/{total_pages}: {len(page1_products)} products")
+    all_products = list(page1_products)
+
+    if total_pages > 1:
+        remaining = list(range(2, min(total_pages, MAX_PAGES) + 1))
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {
+                executor.submit(_fetch_organic_page, p, brand_base, session): p
+                for p in remaining
+            }
+            page_results = {}
+            for future in as_completed(futures):
+                page_num, products = future.result()
+                page_results[page_num] = products or []
+                log_fn(f"  Page {page_num}/{total_pages}: {len(page_results[page_num])} products")
+        for p in remaining:
+            all_products.extend(page_results.get(p, []))
+
+    if meta is not None:
+        meta["scraped_total"] = len(all_products)
+
+    return all_products
+
+
+# ─────────────────────────────────────────────────────────
 #  DATA QUALITY CHECK
 # ─────────────────────────────────────────────────────────
 
