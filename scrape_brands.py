@@ -38,6 +38,11 @@ except ImportError:
 DEFAULT_BRAND = "Paclan"
 DELAY_SECONDS = 1.5
 MAX_PAGES     = 30
+
+# When searching Epicenter for a brand, also pull these extra brand pages and merge
+EPICENTER_BRAND_ALIASES = {
+    "Stella": ["Stella Pack", "Stella Sarantis"],
+}
 # ─────────────────────────────────────────────────────────
 
 REQUEST_HEADERS = {
@@ -237,6 +242,16 @@ def scrape_epicenter(brand, session, has_node, log_fn=print, meta=None):
         return []
 
     log_fn(f"Epicenter: searching for '{brand}'...")
+
+    # If this brand is fully replaced by aliases, skip its own page
+    if brand in EPICENTER_BRAND_ALIASES:
+        all_products = []
+        for alias_brand in EPICENTER_BRAND_ALIASES[brand]:
+            log_fn(f"  Fetching alias brand: '{alias_brand}'...")
+            alias_products = scrape_epicenter(alias_brand, session, has_node, log_fn=log_fn)
+            log_fn(f"  Alias '{alias_brand}': {len(alias_products)} products")
+            all_products.extend(alias_products)
+        return all_products
 
     brand_base = find_epicenter_brand_url(brand, session, log_fn)
     if brand_base:
