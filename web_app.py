@@ -108,7 +108,6 @@ def to_df(products):
     for p in products:
         rows.append({
             "Product Name":   p.get("name", ""),
-            "Category":       p.get("category", ""),
             "SKU":            p.get("sku", ""),
             "Regular Price":  to_float(p.get("price", "")),
             "On Discount":    "Yes" if p.get("on_discount") else "No",

@@ -58,7 +58,6 @@ REQUEST_HEADERS = {
 XLSX_COLS = [
     ("#",               5),
     ("Product Name",   55),
-    ("Category",       25),
     ("SKU / Article",  18),
     ("Regular Price",  14),
     ("On Discount",    12),
@@ -208,15 +207,13 @@ def _parse_epicenter_products(raw_products, log_fn=None):
             in_stock = False
         else:
             in_stock = None
-        seller   = p.get("seller") or ""
-        category = p.get("section_ua") or p.get("section_ru") or ""
+        seller = p.get("seller") or ""
         if name:
             page_products.append({
                 "name": name, "sku": sku,
                 "price": regular_price, "on_discount": on_discount,
                 "discount_price": discount_price,
                 "url": url_p, "in_stock": in_stock, "seller": seller,
-                "category": category,
             })
     return page_products
 
@@ -407,7 +404,6 @@ def _parse_eva_products(brand_data, log_fn=None):
                 "price": regular_price, "on_discount": on_discount,
                 "discount_price": discount_price,
                 "url": url_p, "in_stock": in_stock, "seller": seller,
-                "category": "",
             })
     return page_products
 
@@ -556,16 +552,11 @@ def _parse_organic_page(html):
 
         in_stock = bool(card.find(class_=re.compile(r"j-buy-button-add")))
 
-        # Extract category from URL path: /ua/<category>/<product>/
-        parts = [s for s in url_p.rstrip("/").split("/") if s]
-        category = parts[-2] if len(parts) >= 2 else ""
-
         products.append({
             "name": name, "sku": sku,
             "price": regular_price, "on_discount": on_discount,
             "discount_price": discount_price,
             "url": url_p, "in_stock": in_stock, "seller": "Organic Market",
-            "category": category,
         })
     return products
 
@@ -714,7 +705,7 @@ def write_store_sheet(ws, products, store_name, brand, checked_at):
     ws.freeze_panes = "A3"
 
     disc_fill = PatternFill("solid", fgColor=C_DISCOUNT)
-    aligns = [center, wrap, left, center, center, center, center, center, center, left]
+    aligns = [center, wrap, center, center, center, center, center, center, left]
     for i, p in enumerate(products, 1):
         row = i + 2
         if p["in_stock"] is True:
@@ -730,7 +721,6 @@ def write_store_sheet(ws, products, store_name, brand, checked_at):
         vals = [
             i,
             p.get("name", ""),
-            p.get("category", ""),
             p.get("sku", ""),
             _fmt_price(p.get("price", "")),
             "Yes" if on_disc else "No",
@@ -742,9 +732,9 @@ def write_store_sheet(ws, products, store_name, brand, checked_at):
         for ci, (val, aln) in enumerate(zip(vals, aligns), 1):
             c = ws.cell(row=row, column=ci, value=val)
             c.alignment = aln
-            if ci in (6, 7) and on_disc:
+            if ci in (5, 6) and on_disc:
                 c.fill = disc_fill
-            elif ci == 8:
+            elif ci == 7:
                 c.fill = stock_fill
 
     fr     = len(products) + 4
@@ -756,8 +746,8 @@ def write_store_sheet(ws, products, store_name, brand, checked_at):
     bf     = Font(bold=True)
     ws.cell(row=fr, column=1, value="TOTAL").font = bf
     ws.cell(row=fr, column=2, value=f"{len(products)} products").font = bf
-    ws.cell(row=fr, column=6, value=f"On discount: {disc_n}").font = bf
-    ws.cell(row=fr, column=8,
+    ws.cell(row=fr, column=5, value=f"On discount: {disc_n}").font = bf
+    ws.cell(row=fr, column=7,
             value=f"In stock: {in_n}  |  Out of stock: {out_n}  |  Expected: {exp_n}  |  Unknown: {unk_n}").font = bf
 
 
