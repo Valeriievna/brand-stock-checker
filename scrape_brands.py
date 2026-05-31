@@ -187,9 +187,11 @@ def _epicenter_page_url(brand_base, page_num, use_brand_page):
     return f"{brand_base}?PAGEN_1={page_num}" if use_brand_page else f"{brand_base}&page={page_num}"
 
 
-def _parse_epicenter_products(raw_products):
+def _parse_epicenter_products(raw_products, log_fn=None):
     page_products = []
     for p in raw_products:
+        if log_fn and not page_products:
+            log_fn(f"  [DEBUG Epicenter] first product keys: {list(p.keys())}")
         name      = p.get("name_ua") or p.get("name_ru") or ""
         sku       = str(p.get("id") or "")
         url_p     = p.get("url") or ""
@@ -290,7 +292,7 @@ def scrape_epicenter(brand, session, has_node, log_fn=print, meta=None):
         total_pages = 1
 
     try:
-        page1_products = _parse_epicenter_products(nuxt_data["state"]["products"]["products"])
+        page1_products = _parse_epicenter_products(nuxt_data["state"]["products"]["products"], log_fn=log_fn)
     except (KeyError, TypeError):
         page1_products = []
 
@@ -383,9 +385,11 @@ def parse_eva_nuxt_payload(html_text, brand_id):
     return None
 
 
-def _parse_eva_products(brand_data):
+def _parse_eva_products(brand_data, log_fn=None):
     page_products = []
     for p in brand_data.get("hits", []):
+        if log_fn and not page_products:
+            log_fn(f"  [DEBUG Eva] first product keys: {list(p.keys())}")
         name   = p.get("name") or ""
         sku    = str(p.get("sku") or "")
         price  = p.get("price") or 0
@@ -445,7 +449,7 @@ def scrape_eva(brand, session, log_fn=print, meta=None):
     if site_total and meta is not None:
         meta["site_total"] = int(site_total)
 
-    page1_products = _parse_eva_products(brand_data)
+    page1_products = _parse_eva_products(brand_data, log_fn=log_fn)
     per_page    = len(page1_products) if page1_products else 40
     total_pages = math.ceil(int(site_total) / per_page) if site_total and per_page else 1
 
