@@ -35,9 +35,19 @@ except ImportError:
 # ─────────────────────────────────────────────────────────
 #  SETTINGS
 # ─────────────────────────────────────────────────────────
-DEFAULT_BRAND = "Paclan"
-DELAY_SECONDS = 1.5
-MAX_PAGES     = 30
+DEFAULT_BRAND          = "Paclan"
+DELAY_SECONDS          = 1.5
+MAX_PAGES              = 30
+SILPO_DEFAULT_BRANCH   = "00000000-0000-0000-0000-000000000000"  # online/delivery catalogue
+SILPO_API              = "https://sf-ecom-api.silpo.ua/v1/uk/branches"
+# Maps our brand name → exact brandTitle used on Silpo
+SILPO_BRAND_MAP        = {
+    "Добра Господарка": "Добра господарочка",
+}
+# Product slugs to exclude from Silpo results (Silpo data errors)
+SILPO_SLUG_BLACKLIST   = {
+    "gubky-kukhonni-protect-10-sht-349621",  # PROTECT brand, wrongly tagged as York
+}
 
 # When searching Epicenter for a brand, also pull these extra brand pages and merge
 EPICENTER_BRAND_ALIASES = {
@@ -632,6 +642,74 @@ def scrape_organic(brand, session, log_fn=print, meta=None):
     if meta is not None:
         meta["scraped_total"] = len(all_products)
 
+    return all_products
+
+
+# ─────────────────────────────────────────────────────────
+#  SILPO SCRAPER  (sf-ecom-api.silpo.ua)
+# ─────────────────────────────────────────────────────────
+
+def scrape_silpo(brand, session, log_fn=print, meta=None):
+    silpo_brand = SILPO_BRAND_MAP.get(brand, brand)
+    log_fn(f"Silpo: searching for '{brand}'" + (f" (as '{silpo_brand}')" if silpo_brand != brand else "") + "...")
+    all_products = []
+    limit  = 100
+    offset = 0
+    page   = 1
+
+    while page <= MAX_PAGES:
+        try:
+            r = session.get(
+                f"{SILPO_API}/{SILPO_DEFAULT_BRANCH}/products",
+                params={"search": silpo_brand, "limit": limit, "offset": offset},
+                headers={**REQUEST_HEADERS, "Accept": "application/json"},
+                timeout=20,
+            )
+            data = r.json()
+        except Exception as e:
+            log_fn(f"  Page {page}: error — {e}")
+            break
+
+        items = data.get("items", [])
+        total = data.get("total", 0)
+
+        # keep only exact brand matches (case-insensitive)
+        matching = [p for p in items if (p.get("brandTitle") or "").lower() == silpo_brand.lower()
+                    and p.get("slug") not in SILPO_SLUG_BLACKLIST]
+
+        if page == 1:
+            total_pages = math.ceil(total / limit) if total else 1
+            if meta is not None and matching:
+                meta["site_total"] = len(matching)
+            log_fn(f"  Page 1/{total_pages}: {len(matching)} products")
+        else:
+            log_fn(f"  Page {page}/{total_pages}: {len(matching)} products")
+
+        for p in matching:
+            price      = p.get("price") or 0
+            old_price  = p.get("oldPrice") or 0
+            on_disc    = bool(old_price and old_price > price)
+            slug       = p.get("slug", "")
+            all_products.append({
+                "name":           p.get("title", ""),
+                "sku":            str(p.get("externalProductId") or ""),
+                "price":          str(old_price if on_disc else price),
+                "on_discount":    on_disc,
+                "discount_price": str(price) if on_disc else "",
+                "url":            f"https://silpo.ua/product/{slug}" if slug else "",
+                "in_stock":       (p.get("stock") or 0) > 0,
+                "seller":         "Silpo",
+            })
+
+        if len(items) < limit:
+            break
+        offset += limit
+        page   += 1
+
+    if meta is not None:
+        meta["scraped_total"] = len(all_products)
+
+    log_fn(f"  Total: {len(all_products)} Silpo products found for '{brand}'")
     return all_products
 
 
