@@ -11,7 +11,7 @@ from openpyxl.styles import Font
 
 sys.path.insert(0, str(Path(__file__).parent))
 from scrape_brands import (
-    scrape_epicenter, scrape_eva, scrape_organic, scrape_silpo,
+    scrape_epicenter, scrape_eva, scrape_organic, scrape_silpo, scrape_megamarket,
     node_available, write_store_sheet, write_summary_sheet, check_data_quality,
 )
 
@@ -32,6 +32,7 @@ STORE_BRANDS = {
     "Eva":            PRESET_BRANDS,
     "Organic Market": ["Paclan"],
     "Silpo":          ["Paclan", "Фрекен Бок", "FINO", "York", "Domi", "Vileda", "Добра Господарка", "Stella", "Помічниця"],
+    "Megamarket":     ["Paclan", "Фрекен Бок", "FINO", "Domi", "Vileda", "Помічниця"],
 }
 
 # ── Helpers ───────────────────────────────────────────────
@@ -138,13 +139,15 @@ with st.sidebar:
     use_epicenter = st.checkbox("Epicenter (epicentrk.ua)",               value=True)
     use_eva       = st.checkbox("Eva (eva.ua)",                           value=True)
     use_organic   = st.checkbox("Organic Market (organic-market.com.ua)", value=True)
-    use_silpo     = st.checkbox("Silpo (silpo.ua)",                       value=False)
+    use_silpo      = st.checkbox("Silpo (silpo.ua)",                       value=False)
+    use_megamarket = st.checkbox("Megamarket (megamarket.zakaz.ua)",       value=False)
 
     selected_stores_sidebar = []
-    if use_epicenter: selected_stores_sidebar.append("Epicenter")
-    if use_eva:       selected_stores_sidebar.append("Eva")
-    if use_organic:   selected_stores_sidebar.append("Organic Market")
-    if use_silpo:     selected_stores_sidebar.append("Silpo")
+    if use_epicenter:  selected_stores_sidebar.append("Epicenter")
+    if use_eva:        selected_stores_sidebar.append("Eva")
+    if use_organic:    selected_stores_sidebar.append("Organic Market")
+    if use_silpo:      selected_stores_sidebar.append("Silpo")
+    if use_megamarket: selected_stores_sidebar.append("Megamarket")
 
     st.divider()
     st.subheader("2. Select brands")
@@ -222,6 +225,8 @@ for brand in selected_brands:
                 products = scrape_eva(brand, session, log_fn=st.write, meta=meta)
             elif store == "Silpo":
                 products = scrape_silpo(brand, session, log_fn=st.write, meta=meta)
+            elif store == "Megamarket":
+                products = scrape_megamarket(brand, session, log_fn=st.write, meta=meta)
             else:
                 products = scrape_organic(brand, session, log_fn=st.write, meta=meta)
 
