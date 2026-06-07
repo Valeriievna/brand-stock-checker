@@ -11,8 +11,8 @@ from openpyxl.styles import Font
 
 sys.path.insert(0, str(Path(__file__).parent))
 from scrape_brands import (
-    scrape_epicenter, scrape_eva, scrape_organic, scrape_silpo, node_available,
-    write_store_sheet, write_summary_sheet, check_data_quality,
+    scrape_epicenter, scrape_eva, scrape_organic, scrape_silpo,
+    node_available, write_store_sheet, write_summary_sheet, check_data_quality,
 )
 
 st.set_page_config(

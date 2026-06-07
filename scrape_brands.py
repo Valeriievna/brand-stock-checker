@@ -49,6 +49,9 @@ SILPO_SLUG_BLACKLIST   = {
     "gubky-kukhonni-protect-10-sht-349621",  # PROTECT brand, wrongly tagged as York
 }
 
+MEGAMARKET_STORE_ID    = "48267601"
+MEGAMARKET_API         = "https://stores-api.zakaz.ua/stores"
+
 # When searching Epicenter for a brand, also pull these extra brand pages and merge
 EPICENTER_BRAND_ALIASES = {
     "Stella": ["Stella Pack", "Stella Sarantis"],
@@ -710,6 +713,79 @@ def scrape_silpo(brand, session, log_fn=print, meta=None):
         meta["scraped_total"] = len(all_products)
 
     log_fn(f"  Total: {len(all_products)} Silpo products found for '{brand}'")
+    return all_products
+
+
+# ─────────────────────────────────────────────────────────
+#  MEGAMARKET SCRAPER  (megamarket.zakaz.ua)
+# ─────────────────────────────────────────────────────────
+
+def scrape_megamarket(brand, session, log_fn=print, meta=None):
+    import urllib.parse
+    log_fn(f"Megamarket: searching for '{brand}'...")
+    all_products = []
+    per_page = 100
+    page     = 1
+
+    while page <= MAX_PAGES:
+        try:
+            r = session.get(
+                f"{MEGAMARKET_API}/{MEGAMARKET_STORE_ID}/products/search/",
+                params={"q": brand, "page": page, "per_page": per_page},
+                headers={**REQUEST_HEADERS, "Accept": "application/json"},
+                timeout=20,
+            )
+            data = r.json()
+        except Exception as e:
+            log_fn(f"  Page {page}: error — {e}")
+            break
+
+        total   = data.get("count", 0)
+        results = data.get("results", [])
+
+        matching = [
+            p for p in results
+            if (p.get("producer") or {}).get("trademark", "").lower() == brand.lower()
+        ]
+
+        total_pages = math.ceil(total / per_page) if total else 1
+        if page == 1 and meta is not None:
+            meta["site_total"] = len([
+                p for p in results
+                if (p.get("producer") or {}).get("trademark", "").lower() == brand.lower()
+            ])
+
+        log_fn(f"  Page {page}/{total_pages}: {len(matching)} products")
+
+        for p in matching:
+            price_raw   = p.get("price") or 0
+            disc        = p.get("discount") or {}
+            on_disc     = bool(disc.get("status"))
+            old_raw     = disc.get("old_price") or price_raw
+            regular     = str(round(old_raw / 100, 2)) if on_disc else str(round(price_raw / 100, 2))
+            disc_price  = str(round(price_raw / 100, 2)) if on_disc else ""
+            # Products restricted to ukrposhta-only are not available for standard delivery
+            delivery    = (p.get("restrictions") or {}).get("available_for_delivery_services") or []
+            in_stock    = bool(p.get("in_stock")) and delivery != ["ukrposhta"]
+            all_products.append({
+                "name":           p.get("title", ""),
+                "sku":            str(p.get("sku") or p.get("ean") or ""),
+                "price":          regular,
+                "on_discount":    on_disc,
+                "discount_price": disc_price,
+                "url":            p.get("web_url") or "",
+                "in_stock":       in_stock,
+                "seller":         "Megamarket",
+            })
+
+        if len(results) < per_page:
+            break
+        page += 1
+
+    if meta is not None:
+        meta["scraped_total"] = len(all_products)
+
+    log_fn(f"  Total: {len(all_products)} Megamarket products found for '{brand}'")
     return all_products
 
 
